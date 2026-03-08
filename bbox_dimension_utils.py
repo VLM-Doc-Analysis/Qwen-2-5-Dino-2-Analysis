@@ -1,3 +1,5 @@
+"""Utilities for exporting, extracting, and comparing drawing dimensions."""
+
 import base64
 import json
 import re
@@ -6,7 +8,29 @@ from pathlib import Path
 import cv2
 
 
+__all__ = [
+    "build_bbox_payload",
+    "build_dimension_payload",
+    "canonicalize_dimension_text",
+    "clamp_box",
+    "compare_dimension_json_files",
+    "compare_dimension_lists",
+    "compare_dimension_payloads",
+    "dimension_match_score",
+    "extract_dimensions_for_views",
+    "infer_dimension_schema",
+    "is_dimension_like",
+    "parse_vision_json",
+    "request_dimensions_for_crop",
+    "save_bbox_payload",
+    "save_comparison_payload",
+    "save_dimension_payload",
+    "shift_box",
+]
+
+
 def clamp_box(box, width, height):
+    """Clamp a box to image bounds and guarantee a non-empty area."""
     x1, y1, x2, y2 = [int(round(float(v))) for v in box[:4]]
     x1 = max(0, min(x1, width - 1))
     y1 = max(0, min(y1, height - 1))
@@ -20,6 +44,7 @@ def clamp_box(box, width, height):
 
 
 def shift_box(local_box, view_box):
+    """Translate a crop-local box into page coordinates."""
     vx1, vy1, _, _ = view_box
     x1, y1, x2, y2 = local_box
     return [x1 + vx1, y1 + vy1, x2 + vx1, y2 + vy1]
@@ -98,6 +123,7 @@ def parse_vision_json_relaxed(text):
 
 
 def parse_vision_json(raw_text):
+    """Parse a model response into a list of dimension items."""
     text = extract_json_array_text(raw_text)
     try:
         data = json.loads(text)
@@ -109,6 +135,7 @@ def parse_vision_json(raw_text):
 
 
 def canonicalize_dimension_text(text):
+    """Normalize dimension text for matching and comparison."""
     normalized = (text or "").upper().strip()
     normalized = normalized.replace("Ø", "")
     normalized = normalized.replace("°", "")
@@ -136,6 +163,7 @@ def normalize_view_records(views):
 
 
 def build_bbox_payload(pdf_path, image_path, page_shape, views):
+    """Build a JSON-serializable payload for detected drawing views."""
     height, width = page_shape[:2]
     return {
         "pdf_path": str(pdf_path),
@@ -147,6 +175,7 @@ def build_bbox_payload(pdf_path, image_path, page_shape, views):
 
 
 def save_bbox_payload(payload, output_dir):
+    """Write a view bbox payload to disk and return its path."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(payload["pdf_path"]).stem
@@ -171,6 +200,7 @@ def crop_from_view(page_bgr, view):
 
 
 def infer_dimension_schema(text, item_type):
+    """Infer a structured schema from raw dimension text."""
     raw = (text or "").strip()
     normalized = canonicalize_dimension_text(raw)
     lowered_type = (item_type or "unknown").strip().lower()
@@ -259,6 +289,7 @@ def infer_dimension_schema(text, item_type):
 
 
 def request_dimensions_for_crop(client, model_name, crop_bgr):
+    """Request dimension detections for a cropped drawing view."""
     prompt = (
         "You are reading a cropped mechanical drawing view. "
         "Extract dimensions, tolerances, diameters, radii, threads, chamfers, angles, and roughness marks visible in this crop. "
@@ -285,6 +316,7 @@ def request_dimensions_for_crop(client, model_name, crop_bgr):
 
 
 def extract_dimensions_for_views(page_bgr, views, client, model_name):
+    """Extract and normalize dimensions for each detected view."""
     height, width = page_bgr.shape[:2]
     result_views = []
     for view in normalize_view_records(views):
@@ -326,6 +358,7 @@ def extract_dimensions_for_views(page_bgr, views, client, model_name):
 
 
 def build_dimension_payload(pdf_path, image_path, page_shape, views_with_dimensions, model_name):
+    """Build a JSON-serializable payload for extracted dimensions."""
     height, width = page_shape[:2]
     return {
         "pdf_path": str(pdf_path),
@@ -339,6 +372,7 @@ def build_dimension_payload(pdf_path, image_path, page_shape, views_with_dimensi
 
 
 def save_dimension_payload(payload, output_dir):
+    """Write a dimension payload to disk and return its path."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = Path(payload["pdf_path"]).stem
@@ -369,6 +403,7 @@ def _float_close(a, b, abs_tol=0.15, rel_tol=0.01):
 
 
 def is_dimension_like(item):
+    """Return whether an item is meaningful for dimension comparison."""
     parsed = item.get("parsed", {}) if isinstance(item, dict) else {}
     text = _normalized_dimension_text(item)
     if re.search(r"\d", text):
@@ -383,6 +418,7 @@ def is_dimension_like(item):
 
 
 def dimension_match_score(reference_item, candidate_item):
+    """Score how well two dimension items match."""
     ref_parsed = reference_item.get("parsed", {})
     cand_parsed = candidate_item.get("parsed", {})
     ref_text = _normalized_dimension_text(reference_item)
@@ -463,6 +499,7 @@ def classify_match_score(score):
 
 
 def compare_dimension_lists(reference_items, candidate_items, match_threshold=0.60):
+    """Compare two dimension lists and return match statistics."""
     ref_items = [item for item in reference_items if is_dimension_like(item)]
     cand_items = [item for item in candidate_items if is_dimension_like(item)]
 
@@ -531,6 +568,7 @@ def compare_dimension_lists(reference_items, candidate_items, match_threshold=0.
 
 
 def compare_dimension_payloads(reference_payload, candidate_payload):
+    """Compare two exported dimension payloads view by view."""
     reference_views = {view["view_id"]: view for view in reference_payload.get("views", [])}
     candidate_views = {view["view_id"]: view for view in candidate_payload.get("views", [])}
     shared_view_ids = sorted(set(reference_views) | set(candidate_views))
@@ -609,12 +647,14 @@ def compare_dimension_payloads(reference_payload, candidate_payload):
 
 
 def compare_dimension_json_files(reference_path, candidate_path):
+    """Load and compare two exported dimension JSON files."""
     reference_payload = json.loads(Path(reference_path).read_text(encoding="utf-8"))
     candidate_payload = json.loads(Path(candidate_path).read_text(encoding="utf-8"))
     return compare_dimension_payloads(reference_payload, candidate_payload)
 
 
 def save_comparison_payload(report, output_dir):
+    """Write a comparison report to disk and return its path."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     ref_stem = Path(report["reference_pdf"]).stem
